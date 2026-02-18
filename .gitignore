@@ -1,0 +1,44 @@
+# Environment and secrets
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+
+# Logs
+*.log
+
+# Checkpoints and temp files
+*.json
+!requirements.txt
+*.tmp
+
+# MacOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test and debug artifacts
+test_*.py
+debug_*.py
+downloaded_*/
+
+# Output
+output/
+*.csv
+*.zip
+*.pem

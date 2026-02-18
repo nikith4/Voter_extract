@@ -1,0 +1,28 @@
+# Core dependencies for voter field extraction from PDFs
+
+# Computer Vision & Image Processing
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Google Cloud Vision API for OCR
+google-cloud-vision>=3.4.0
+
+# PDF Processing
+pdf2image>=1.16.0
+PyMuPDF>=1.23.0  # fitz
+
+# HTTP Client (used by api_functions)
+httpx>=0.24.0
+
+# Environment Variables
+python-dotenv>=1.0.0
+
+# AWS S3 Integration
+boto3>=1.28.0
+smart-open[s3]>=6.4.0
+
+# Data Processing
+pandas>=2.0.0
+
+# Parallel Processing
+tqdm>=4.66.0  # Progress bars
