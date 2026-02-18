@@ -34,16 +34,34 @@ from csv_converter import voter_cards_to_csv
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging with separate files for different purposes
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('voter_extraction.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
+# Main logger
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Detailed log (everything)
+detailed_handler = logging.FileHandler('voter_extraction_detailed.log')
+detailed_handler.setLevel(logging.DEBUG)
+detailed_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+# Status log (important events only)
+status_handler = logging.FileHandler('voter_extraction_status.log')
+status_handler.setLevel(logging.INFO)
+status_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+
+# Console output (clean, essential info)
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+
+logger.addHandler(detailed_handler)
+logger.addHandler(status_handler)
+logger.addHandler(console_handler)
 
 
 class VoterExtractionPipeline:
@@ -435,6 +453,14 @@ class VoterExtractionPipeline:
             # Update stats
             self.stats['total_pdfs_processed'] += 1
             self.stats['total_cards_extracted'] += len(all_cards)
+
+            # Log progress summary every 10 PDFs
+            if self.stats['total_pdfs_processed'] % 10 == 0:
+                logger.info(f"\n{'='*80}")
+                logger.info(f"PROGRESS UPDATE - {self.stats['total_pdfs_processed']} PDFs processed")
+                logger.info(f"Total cards extracted: {self.stats['total_cards_extracted']:,}")
+                logger.info(f"Total errors: {self.stats['total_errors']}")
+                logger.info(f"{'='*80}\n")
 
             return csv_path
 
