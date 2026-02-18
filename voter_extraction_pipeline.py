@@ -670,26 +670,39 @@ class VoterExtractionPipeline:
                         logger.info(f"Processing {len(pdf_files_to_process)} PDFs with {self.max_concurrent_pdfs} concurrent workers")
                         logger.info(f"🔧 Semaphore config: {self.max_concurrent_pdfs} PDFs in parallel, 3 pages per PDF = max {self.max_concurrent_pdfs * 3} pages total")
 
-                        # Process PDFs in parallel with controlled concurrency
-                        # IMPORTANT: Extract ZIP to temp directory first to avoid holding all PDFs in memory
-                        logger.info("  Extracting ZIP to temp directory...")
-                        zip_ref.extractall(temp_dir)
-                        logger.info("  ✓ ZIP extracted")
+                        # Process PDFs in batches to avoid memory/disk issues
+                        # Extract ONLY current batch to disk, process, clean up, repeat
+                        batch_size = self.max_concurrent_pdfs * 2  # Extract 2x semaphore size
+                        total_pdfs = len(pdf_files_to_process)
 
-                        # Create tasks for all PDFs (but read from disk, not memory!)
-                        tasks = []
-                        for i, pdf_name in enumerate(pdf_files_to_process, 1):
-                            # PDF will be read from temp_dir inside the semaphore (memory efficient!)
-                            pdf_file_path = os.path.join(temp_dir, pdf_name)
+                        for batch_start in range(0, total_pdfs, batch_size):
+                            batch_end = min(batch_start + batch_size, total_pdfs)
+                            batch = pdf_files_to_process[batch_start:batch_end]
+                            logger.info(f"  Extracting batch {batch_start//batch_size + 1}: PDFs {batch_start+1}-{batch_end}/{total_pdfs}")
 
-                            # Create task with semaphore control
-                            task = self._process_single_pdf_from_disk_with_semaphore(
-                                pdf_file_path, pdf_name, zip_folder, temp_dir, i, len(pdf_files_to_process)
-                            )
-                            tasks.append(task)
+                            # Extract only this batch
+                            for pdf_name in batch:
+                                pdf_data = zip_ref.read(pdf_name)
+                                pdf_path = os.path.join(temp_dir, os.path.basename(pdf_name))
+                                with open(pdf_path, 'wb') as f:
+                                    f.write(pdf_data)
 
-                        # Execute all tasks in parallel (limited by semaphore)
-                        await asyncio.gather(*tasks, return_exceptions=True)
+                            # Process this batch in parallel
+                            tasks = []
+                            for i, pdf_name in enumerate(batch, batch_start + 1):
+                                pdf_file_path = os.path.join(temp_dir, os.path.basename(pdf_name))
+                                task = self._process_single_pdf_from_disk_with_semaphore(
+                                    pdf_file_path, pdf_name, zip_folder, temp_dir, i, total_pdfs
+                                )
+                                tasks.append(task)
+
+                            await asyncio.gather(*tasks, return_exceptions=True)
+
+                            # Clean up batch PDFs from disk
+                            for pdf_name in batch:
+                                pdf_path = os.path.join(temp_dir, os.path.basename(pdf_name))
+                                if os.path.exists(pdf_path):
+                                    os.remove(pdf_path)
 
                 # IMPORTANT: Only mark ZIP as completed if ALL PDFs were processed (no limit applied)
                 if is_partial_processing:
