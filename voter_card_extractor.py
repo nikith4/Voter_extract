@@ -32,6 +32,10 @@ import cv2
 import httpx
 import numpy as np
 from pdf2image import convert_from_path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -39,7 +43,7 @@ from pdf2image import convert_from_path
 # ─────────────────────────────────────────────────────────────────────────────
 
 ONNX_API_URL = "https://dev-ai.zoop.one/paddle/onnx/base"
-ONNX_API_KEY = "***REMOVED***"
+ONNX_API_KEY = os.getenv('ONNX_OCR_API_KEY')
 PDF_DPI      = 300
 DEFAULT_PDF  = "2024-FC-EROLLGEN-S13-206-FinalRoll-Revision2-ENG-10-WI.pdf"
 OUTPUT_DIR   = "voter_cards_output"

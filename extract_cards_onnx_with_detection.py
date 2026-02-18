@@ -17,6 +17,10 @@ import logging
 from pdf2image import convert_from_path
 import sys
 import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +146,7 @@ async def call_onnx_ocr(image_path):
 
     url = "https://dev-ai.zoop.one/paddle/onnx/base"
     headers = {
-        'API-KEY': '***REMOVED***',
+        'API-KEY': os.getenv('ONNX_OCR_API_KEY'),
         'Content-Type': 'application/json'
     }
     payload = {
@@ -194,7 +198,7 @@ async def call_onnx_ocr_crop(image_path, card_box):
     # Call ONNX API on crop with retry logic
     url = "https://dev-ai.zoop.one/paddle/onnx/base"
     headers = {
-        'API-KEY': '***REMOVED***',
+        'API-KEY': os.getenv('ONNX_OCR_API_KEY'),
         'Content-Type': 'application/json'
     }
     payload = {
