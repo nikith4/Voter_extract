@@ -547,6 +547,43 @@ class VoterExtractionPipeline:
 
             return None
 
+    async def _process_single_pdf_from_disk_with_semaphore(
+        self,
+        pdf_file_path: str,
+        pdf_name: str,
+        zip_folder: str,
+        temp_dir: str,
+        index: int,
+        total: int
+    ) -> Optional[str]:
+        """
+        Wrapper that reads PDF from disk and processes it (memory efficient).
+
+        Reads PDF only when semaphore is acquired, avoiding memory buildup.
+
+        Args:
+            pdf_file_path: Path to PDF file on disk
+            pdf_name: Name of PDF file
+            zip_folder: Folder name in output bucket
+            temp_dir: Temporary directory
+            index: Current PDF index (1-based)
+            total: Total number of PDFs
+
+        Returns:
+            Path to created CSV file (None if failed)
+        """
+        logger.debug(f"📋 [PDF {index}/{total}] Waiting for PDF semaphore...")
+        async with self.pdf_semaphore:
+            logger.info(f"🔓 [PDF {index}/{total}] Acquired PDF semaphore, starting: {pdf_name}")
+            try:
+                # Read PDF from disk ONLY when ready to process (memory efficient!)
+                with open(pdf_file_path, 'rb') as f:
+                    pdf_data = f.read()
+
+                return await self.process_single_pdf(pdf_data, pdf_name, zip_folder, temp_dir, index)
+            finally:
+                logger.debug(f"🔒 [PDF {index}/{total}] Released PDF semaphore")
+
     async def _process_single_pdf_with_semaphore(
         self,
         pdf_data: bytes,
@@ -634,15 +671,20 @@ class VoterExtractionPipeline:
                         logger.info(f"🔧 Semaphore config: {self.max_concurrent_pdfs} PDFs in parallel, 3 pages per PDF = max {self.max_concurrent_pdfs * 3} pages total")
 
                         # Process PDFs in parallel with controlled concurrency
-                        # Create tasks for all PDFs
+                        # IMPORTANT: Extract ZIP to temp directory first to avoid holding all PDFs in memory
+                        logger.info("  Extracting ZIP to temp directory...")
+                        zip_ref.extractall(temp_dir)
+                        logger.info("  ✓ ZIP extracted")
+
+                        # Create tasks for all PDFs (but read from disk, not memory!)
                         tasks = []
                         for i, pdf_name in enumerate(pdf_files_to_process, 1):
-                            # Read PDF data from ZIP (streams only this file)
-                            pdf_data = zip_ref.read(pdf_name)
+                            # PDF will be read from temp_dir inside the semaphore (memory efficient!)
+                            pdf_file_path = os.path.join(temp_dir, pdf_name)
 
                             # Create task with semaphore control
-                            task = self._process_single_pdf_with_semaphore(
-                                pdf_data, pdf_name, zip_folder, temp_dir, i, len(pdf_files_to_process)
+                            task = self._process_single_pdf_from_disk_with_semaphore(
+                                pdf_file_path, pdf_name, zip_folder, temp_dir, i, len(pdf_files_to_process)
                             )
                             tasks.append(task)
 
