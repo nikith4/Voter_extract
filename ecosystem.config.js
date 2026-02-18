@@ -8,7 +8,7 @@ module.exports = {
     instances: 1,
     autorestart: true,
     watch: false,
-    max_memory_restart: '4G',
+    max_memory_restart: '12G',  // Increased for m7i.xlarge (16GB RAM)
     env: {
       NODE_ENV: 'production'
     },
