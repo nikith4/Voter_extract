@@ -295,6 +295,62 @@ class VoterExtractionPipeline:
             logger.debug(traceback.format_exc())
             return [], 0
 
+    async def _process_page_from_pdf_with_semaphore(
+        self,
+        pdf_path: str,
+        page_num: int,
+        total_pages: int,
+        temp_dir: str,
+        pdf_stem: str,
+        page_semaphore: asyncio.Semaphore,
+        pdf_index: int
+    ) -> tuple:
+        """
+        Convert and process a single page from PDF (memory efficient).
+
+        Converts ONLY the requested page instead of entire PDF to save memory.
+
+        Args:
+            pdf_path: Path to PDF file
+            page_num: Page number (1-indexed)
+            total_pages: Total pages in PDF
+            temp_dir: Temporary directory
+            pdf_stem: PDF file stem for naming
+            page_semaphore: Semaphore for this specific PDF (NOT shared)
+            pdf_index: PDF index for logging (1-based)
+
+        Returns:
+            Tuple of (page_num, cards_list, fallback_count)
+        """
+        logger.debug(f"  📄 [PDF {pdf_index}] Page {page_num}/{total_pages}: Waiting for page semaphore...")
+        async with page_semaphore:
+            logger.debug(f"  ✓ [PDF {pdf_index}] Page {page_num}/{total_pages}: Acquired page semaphore, converting page...")
+            try:
+                # Convert ONLY this page (not entire PDF!) - saves massive memory
+                from pdf2image import convert_from_path
+                images = convert_from_path(pdf_path, dpi=300, first_page=page_num, last_page=page_num)
+                img = images[0]  # Only one page returned
+
+                # Save page as image
+                image_path = os.path.join(temp_dir, f"{pdf_stem}_page_{page_num:04d}.png")
+                img.save(image_path, 'PNG')
+
+                # Extract cards from page
+                page_cards, fallback_count = await self.process_pdf_page(image_path)
+
+                # Delete page image immediately
+                os.remove(image_path)
+
+                fallback_str = f" (fallback: {fallback_count})" if fallback_count > 0 else ""
+                logger.info(f"  ✅ [PDF {pdf_index}] Page {page_num}/{total_pages}: {len(page_cards)} cards extracted{fallback_str}")
+
+                return (page_num, page_cards, fallback_count)
+
+            except Exception as e:
+                logger.error(f"  ❌ [PDF {pdf_index}] Page {page_num}/{total_pages}: Error processing page: {e}")
+                logger.debug(traceback.format_exc())
+                return (page_num, [], 0)
+
     async def _process_page_with_semaphore(
         self,
         img,
@@ -307,6 +363,7 @@ class VoterExtractionPipeline:
     ) -> tuple:
         """
         Process a single page with semaphore control for parallel page processing.
+        DEPRECATED: Use _process_page_from_pdf_with_semaphore for memory efficiency.
 
         Args:
             img: PIL Image object
@@ -386,12 +443,13 @@ class VoterExtractionPipeline:
             with open(pdf_path, 'wb') as f:
                 f.write(pdf_data)
 
-            # Convert PDF to images
+            # Get page count WITHOUT converting all pages (memory efficient)
+            from pdf2image import pdfinfo_from_path
             from pdf2image import convert_from_path
 
-            images = convert_from_path(pdf_path, dpi=300)
-            total_pages = len(images)
-            logger.info(f"  - Converted to {total_pages} page(s)")
+            pdf_info = pdfinfo_from_path(pdf_path)
+            total_pages = pdf_info['Pages']
+            logger.info(f"  - PDF has {total_pages} page(s)")
 
             # IMPORTANT: Cards only appear on pages 3 to (last_page - 2)
             # Pages 1-2: Cover, index, headers
@@ -406,16 +464,16 @@ class VoterExtractionPipeline:
 
             logger.info(f"  - Processing pages {start_page} to {end_page} (skipping first 2 and last 2)")
 
-            # Process pages in parallel (create semaphore per-PDF, not shared)
+            # Process pages one at a time (memory efficient - no bulk conversion!)
             pdf_stem = Path(pdf_basename).stem
             page_semaphore = asyncio.Semaphore(3)  # 3 pages at a time for THIS PDF
             logger.debug(f"  🔧 [PDF {pdf_index}] Created page semaphore with limit=3 (per-PDF, not shared)")
 
             tasks = []
             for page_num in range(start_page, end_page + 1):
-                img = images[page_num - 1]  # Convert to 0-indexed
-                task = self._process_page_with_semaphore(
-                    img, page_num, total_pages, temp_dir, pdf_stem, page_semaphore, pdf_index
+                # Convert ONLY this page (not entire PDF!) - huge memory savings
+                task = self._process_page_from_pdf_with_semaphore(
+                    pdf_path, page_num, total_pages, temp_dir, pdf_stem, page_semaphore, pdf_index
                 )
                 tasks.append(task)
 
