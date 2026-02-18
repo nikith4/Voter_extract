@@ -12,6 +12,7 @@ import tempfile
 import json
 import asyncio
 import logging
+import signal
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -74,7 +75,7 @@ class VoterExtractionPipeline:
         input_bucket: str = 'voter-pdf-dump',
         output_bucket: str = 'voter-pdf-output',
         checkpoint_file: str = 'extraction_checkpoint.json',
-        max_concurrent_pdfs: int = 5
+        max_concurrent_pdfs: int = 3
     ):
         """
         Initialize the extraction pipeline.
@@ -83,12 +84,13 @@ class VoterExtractionPipeline:
             input_bucket: S3 bucket containing ZIP files
             output_bucket: S3 bucket for CSV outputs
             checkpoint_file: Local file to track progress
-            max_concurrent_pdfs: Maximum PDFs to process in parallel (default: 5)
+            max_concurrent_pdfs: Maximum PDFs to process in parallel (default: 3)
         """
         self.input_bucket = input_bucket
         self.output_bucket = output_bucket
         self.checkpoint_file = checkpoint_file
         self.max_concurrent_pdfs = max_concurrent_pdfs
+        self.shutdown_requested = False
 
         # AWS credentials from .env
         self.aws_access_key = os.getenv('ACCESS_KEY_ID')
@@ -106,6 +108,9 @@ class VoterExtractionPipeline:
 
         # Load checkpoint
         self.checkpoint = self._load_checkpoint()
+
+        # Lock for thread-safe checkpoint updates (prevents race conditions)
+        self.checkpoint_lock = asyncio.Lock()
 
         # Semaphores for controlling concurrency
         self.pdf_semaphore = asyncio.Semaphore(max_concurrent_pdfs)
@@ -170,42 +175,46 @@ class VoterExtractionPipeline:
             'last_updated': None
         }
 
-    def _save_checkpoint(self):
+    async def _save_checkpoint(self):
         """
         Save current progress to S3 (primary) and local file (backup).
 
+        Thread-safe with asyncio.Lock to prevent race conditions when multiple
+        PDFs complete simultaneously.
+
         Saves to both locations to ensure checkpoint survives EC2 crashes/terminations.
         """
-        self.checkpoint['last_updated'] = datetime.now().isoformat()
-        s3_key = 'checkpoints/extraction_checkpoint.json'
+        async with self.checkpoint_lock:
+            self.checkpoint['last_updated'] = datetime.now().isoformat()
+            s3_key = 'checkpoints/extraction_checkpoint.json'
 
-        # Save to local file first (atomic write using temp file)
-        try:
-            temp_file = f"{self.checkpoint_file}.tmp"
-            with open(temp_file, 'w') as f:
-                json.dump(self.checkpoint, f, indent=2)
+            # Save to local file first (atomic write using temp file)
+            try:
+                temp_file = f"{self.checkpoint_file}.tmp"
+                with open(temp_file, 'w') as f:
+                    json.dump(self.checkpoint, f, indent=2)
 
-            # Atomic rename (prevents corruption if interrupted)
-            os.replace(temp_file, self.checkpoint_file)
+                # Atomic rename (prevents corruption if interrupted)
+                os.replace(temp_file, self.checkpoint_file)
 
-        except Exception as e:
-            logger.error(f"Failed to save checkpoint to local file: {e}")
+            except Exception as e:
+                logger.error(f"Failed to save checkpoint to local file: {e}")
 
-        # Save to S3 (primary persistent storage)
-        try:
-            checkpoint_json = json.dumps(self.checkpoint, indent=2)
-            self.s3_client.put_object(
-                Bucket=self.output_bucket,
-                Key=s3_key,
-                Body=checkpoint_json.encode('utf-8'),
-                ContentType='application/json'
-            )
-            logger.debug(f"✓ Checkpoint saved to S3 and local: {len(self.checkpoint['completed_pdfs'])} PDFs, "
-                        f"{len(self.checkpoint['completed_zips'])} ZIPs completed")
+            # Save to S3 (primary persistent storage)
+            try:
+                checkpoint_json = json.dumps(self.checkpoint, indent=2)
+                self.s3_client.put_object(
+                    Bucket=self.output_bucket,
+                    Key=s3_key,
+                    Body=checkpoint_json.encode('utf-8'),
+                    ContentType='application/json'
+                )
+                logger.debug(f"✓ Checkpoint saved to S3 and local: {len(self.checkpoint['completed_pdfs'])} PDFs, "
+                            f"{len(self.checkpoint['completed_zips'])} ZIPs completed")
 
-        except Exception as e:
-            logger.error(f"Failed to save checkpoint to S3: {e}")
-            logger.warning("⚠️  Checkpoint only saved locally - may be lost if EC2 terminates!")
+            except Exception as e:
+                logger.error(f"Failed to save checkpoint to S3: {e}")
+                logger.warning("⚠️  Checkpoint only saved locally - may be lost if EC2 terminates!")
 
     def list_zip_files(self) -> List[str]:
         """
@@ -446,9 +455,10 @@ class VoterExtractionPipeline:
             # Delete CSV file
             os.remove(csv_path)
 
-            # Update checkpoint
-            self.checkpoint['completed_pdfs'].append(pdf_id)
-            self._save_checkpoint()
+            # Update checkpoint (thread-safe with lock)
+            async with self.checkpoint_lock:
+                self.checkpoint['completed_pdfs'].append(pdf_id)
+            await self._save_checkpoint()
 
             # Update stats
             self.stats['total_pdfs_processed'] += 1
@@ -529,8 +539,9 @@ class VoterExtractionPipeline:
         logger.info(f"Processing ZIP: {zip_key} → Folder: {zip_folder}")
         logger.info("=" * 80)
 
-        self.checkpoint['current_zip'] = zip_key
-        self._save_checkpoint()
+        async with self.checkpoint_lock:
+            self.checkpoint['current_zip'] = zip_key
+        await self._save_checkpoint()
 
         # Create temp directory
         with tempfile.TemporaryDirectory(prefix=f'{zip_folder}_') as temp_dir:
@@ -586,13 +597,15 @@ class VoterExtractionPipeline:
                     logger.info(f"   ZIP NOT marked complete - remaining PDFs will be processed on next run")
                 else:
                     # All PDFs processed - mark ZIP as completed
-                    self.checkpoint['completed_zips'].append(zip_key)
+                    async with self.checkpoint_lock:
+                        self.checkpoint['completed_zips'].append(zip_key)
                     self.stats['total_zips_processed'] += 1
                     logger.info(f"\n✓ Completed ZIP: {zip_key} ({total_pdfs_in_zip} PDFs)")
 
                 # Clear current_zip regardless (we're done with this ZIP for now)
-                self.checkpoint['current_zip'] = None
-                self._save_checkpoint()
+                async with self.checkpoint_lock:
+                    self.checkpoint['current_zip'] = None
+                await self._save_checkpoint()
 
             except Exception as e:
                 logger.error(f"Error processing ZIP {zip_key}: {e}")
@@ -632,6 +645,9 @@ class VoterExtractionPipeline:
 
         # Process each ZIP
         for zip_key in remaining_zips:
+            if self.shutdown_requested:
+                logger.warning("⚠️  Shutdown requested, stopping after current ZIP...")
+                break
             await self.process_zip_file(zip_key, limit_pdfs=limit_pdfs)
 
         self.stats['end_time'] = datetime.now().isoformat()
@@ -659,15 +675,32 @@ class VoterExtractionPipeline:
 
 
 async def main():
-    """Main entry point."""
-    # Initialize with parallel processing (10 PDFs concurrently for production)
+    """Main entry point with graceful shutdown handling."""
+    # Initialize with parallel processing (3 PDFs to prevent memory overflow)
     pipeline = VoterExtractionPipeline(
-        max_concurrent_pdfs=10  # Adjust based on rate limits and server capacity
+        max_concurrent_pdfs=3  # Reduced from 10 to prevent PM2 memory kills
     )
 
-    # For local testing: Process 1 ZIP with 2 PDFs
-    # For production: Remove limits
-    await pipeline.run(limit_zips=1, limit_pdfs=2)
+    # Setup signal handlers for graceful shutdown
+    def signal_handler(signum, frame):
+        logger.warning(f"\n⚠️  Received signal {signum}, initiating graceful shutdown...")
+        pipeline.shutdown_requested = True
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
+    try:
+        # Production: No limits - process all ZIPs and PDFs
+        await pipeline.run()
+    except KeyboardInterrupt:
+        logger.warning("\n⚠️  KeyboardInterrupt received, saving checkpoint and exiting...")
+        await pipeline._save_checkpoint()
+        logger.info("✓ Checkpoint saved before exit")
+    except Exception as e:
+        logger.error(f"Fatal error in pipeline: {e}")
+        logger.debug(traceback.format_exc())
+        await pipeline._save_checkpoint()
+        raise
 
 
 if __name__ == "__main__":
