@@ -75,7 +75,7 @@ class VoterExtractionPipeline:
         input_bucket: str = 'voter-pdf-dump',
         output_bucket: str = 'voter-pdf-output',
         checkpoint_file: str = 'extraction_checkpoint.json',
-        max_concurrent_pdfs: int = 10
+        max_concurrent_pdfs: int = 6
     ):
         """
         Initialize the extraction pipeline.
@@ -84,7 +84,7 @@ class VoterExtractionPipeline:
             input_bucket: S3 bucket containing ZIP files
             output_bucket: S3 bucket for CSV outputs
             checkpoint_file: Local file to track progress
-            max_concurrent_pdfs: Maximum PDFs to process in parallel (default: 10)
+            max_concurrent_pdfs: Maximum PDFs to process in parallel (default: 6)
         """
         self.input_bucket = input_bucket
         self.output_bucket = output_bucket
@@ -776,9 +776,9 @@ class VoterExtractionPipeline:
 
 async def main():
     """Main entry point with graceful shutdown handling."""
-    # Initialize with parallel processing (optimized for m7i.xlarge: 16GB RAM, 4 vCPUs)
+    # Initialize with parallel processing (optimized for OCR API rate limits)
     pipeline = VoterExtractionPipeline(
-        max_concurrent_pdfs=10  # Optimal for 4-core instance with 12GB PM2 limit
+        max_concurrent_pdfs=6  # Balanced: 2x speed + avoid API rate limiting
     )
 
     # Setup signal handlers for graceful shutdown
