@@ -9,6 +9,7 @@ import os
 import sys
 import zipfile
 import tempfile
+import shutil
 import json
 import asyncio
 import logging
@@ -638,8 +639,9 @@ class VoterExtractionPipeline:
             self.checkpoint['current_zip'] = zip_key
         await self._save_checkpoint()
 
-        # Create temp directory
-        with tempfile.TemporaryDirectory(prefix=f'{zip_folder}_') as temp_dir:
+        # Create temp directory with explicit cleanup
+        temp_dir = tempfile.mkdtemp(prefix=f'{zip_folder}_')
+        try:
             s3_uri = f's3://{self.input_bucket}/{zip_key}'
 
             # Configure transport params for smart-open
@@ -724,6 +726,15 @@ class VoterExtractionPipeline:
                 logger.error(f"Error processing ZIP {zip_key}: {e}")
                 logger.debug(traceback.format_exc())
                 self.stats['total_errors'] += 1
+
+        finally:
+            # CRITICAL: Always clean up temp directory, even on errors
+            if os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir)
+                    logger.debug(f"Cleaned up temp directory: {temp_dir}")
+                except Exception as cleanup_err:
+                    logger.error(f"Failed to cleanup temp directory {temp_dir}: {cleanup_err}")
 
     async def run(self, limit_zips: Optional[int] = None, limit_pdfs: Optional[int] = None):
         """
