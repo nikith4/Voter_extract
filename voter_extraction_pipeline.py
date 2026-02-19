@@ -76,7 +76,7 @@ class VoterExtractionPipeline:
         input_bucket: str = 'voter-pdf-dump',
         output_bucket: str = 'voter-pdf-output',
         checkpoint_file: str = 'extraction_checkpoint.json',
-        max_concurrent_pdfs: int = 6
+        max_concurrent_pdfs: int = 12
     ):
         """
         Initialize the extraction pipeline.
@@ -802,7 +802,7 @@ async def main():
     """Main entry point with graceful shutdown handling."""
     # Initialize with parallel processing (optimized for OCR API rate limits)
     pipeline = VoterExtractionPipeline(
-        max_concurrent_pdfs=6  # Balanced: 2x speed + avoid API rate limiting
+        max_concurrent_pdfs=12  # Doubled OCR API resources - 2x concurrency
     )
 
     # Setup signal handlers for graceful shutdown
