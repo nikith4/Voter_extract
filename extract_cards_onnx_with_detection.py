@@ -53,7 +53,7 @@ async def _call_onnx_api_with_retry(url, headers, payload, max_retries=5, base_d
 
     for attempt in range(max_retries):
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(url, headers=headers, json=payload)
 
                 # Check for rate limiting
