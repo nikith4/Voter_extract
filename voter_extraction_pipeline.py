@@ -296,6 +296,42 @@ class VoterExtractionPipeline:
             logger.debug(traceback.format_exc())
             return [], 0
 
+    async def _extract_pincode_from_page1(self, pdf_path: str, temp_dir: str) -> str:
+        """
+        Extract pincode from page 1 of a PDF (cover/header page).
+        Returns the 6-digit pincode string, or empty string if not found.
+        """
+        import re
+        from pdf2image import convert_from_path
+        try:
+            images = convert_from_path(pdf_path, dpi=150, first_page=1, last_page=1)
+            page1_path = os.path.join(temp_dir, '_page1_pincode.png')
+            images[0].save(page1_path, 'PNG')
+
+            onnx_result = await call_onnx_ocr(page1_path)
+            text_blocks = get_text_blocks_from_onnx(onnx_result)
+
+            pincode_pattern = re.compile(r'\b(\d{6})\b')
+
+            # First: look near pincode keyword
+            for block in text_blocks:
+                text = block['text']
+                if 'pin' in text.lower():
+                    match = pincode_pattern.search(text)
+                    if match:
+                        return match.group(1)
+
+            # Second: any 6-digit number not starting with 0
+            for block in text_blocks:
+                match = pincode_pattern.search(block['text'])
+                if match and match.group(1)[0] != '0':
+                    return match.group(1)
+
+        except Exception as e:
+            logger.warning(f"  - Could not extract pincode from page 1: {e}")
+
+        return ''
+
     async def _process_page_from_pdf_with_semaphore(
         self,
         pdf_path: str,
@@ -465,6 +501,13 @@ class VoterExtractionPipeline:
 
             logger.info(f"  - Processing pages {start_page} to {end_page} (skipping first 2 and last 2)")
 
+            # Extract pincode from page 1 (cover page)
+            pincode = await self._extract_pincode_from_page1(pdf_path, temp_dir)
+            if pincode:
+                logger.info(f"  - Pincode: {pincode}")
+            else:
+                logger.warning(f"  - Pincode not found on page 1")
+
             # Process pages one at a time (memory efficient - no bulk conversion!)
             pdf_stem = Path(pdf_basename).stem
             page_semaphore = asyncio.Semaphore(3)  # 3 pages at a time for THIS PDF
@@ -496,6 +539,10 @@ class VoterExtractionPipeline:
 
             # Delete PDF file
             os.remove(pdf_path)
+
+            # Stamp pincode on every card
+            for card in all_cards:
+                card['pincode'] = pincode
 
             # Convert to CSV (use basename)
             csv_name = f"{Path(pdf_basename).stem}.csv"

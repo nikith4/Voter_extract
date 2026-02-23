@@ -142,7 +142,8 @@ def get_csv_headers() -> List[str]:
         'relation_name',
         'house_number',
         'age',
-        'gender'
+        'gender',
+        'pincode'
     ]
 
 
