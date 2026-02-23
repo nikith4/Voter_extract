@@ -820,6 +820,15 @@ class VoterExtractionPipeline:
 
         # Filter out completed ZIPs
         remaining_zips = [z for z in zip_files if z not in self.checkpoint['completed_zips']]
+
+        # Prioritize specific ZIPs to process first
+        PRIORITY_ZIPS = ['S1325_Pune.zip']
+        priority = [z for z in PRIORITY_ZIPS if z in remaining_zips]
+        rest = [z for z in remaining_zips if z not in PRIORITY_ZIPS]
+        remaining_zips = priority + rest
+        if priority:
+            logger.info(f"⚡ Priority ZIPs (processed first): {priority}")
+
         logger.info(f"Remaining ZIPs to process: {len(remaining_zips)} / {len(zip_files)}")
 
         # Limit for testing
