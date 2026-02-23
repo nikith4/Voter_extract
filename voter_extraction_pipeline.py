@@ -66,6 +66,14 @@ logger.addHandler(status_handler)
 logger.addHandler(console_handler)
 
 
+# Assembly constituency numbers to exclude from processing
+# Format: 'S13-<number>-' matches PDFs from that constituency
+EXCLUDED_CONSTITUENCY_PATTERNS = [
+    'S13-205-',  # Chinchwad (in S1325_Pune.zip)
+    'S13-206-',  # Pimpri (SC)
+]
+
+
 class VoterExtractionPipeline:
     """
     Main pipeline for extracting voter data from S3 ZIP files.
@@ -708,8 +716,13 @@ class VoterExtractionPipeline:
                         total_pdfs_in_zip = len(all_pdf_files)
                         logger.info(f"Found {total_pdfs_in_zip} PDF files in ZIP")
 
+                        # Filter out excluded constituencies
+                        excluded = [f for f in all_pdf_files if any(p in f for p in EXCLUDED_CONSTITUENCY_PATTERNS)]
+                        pdf_files_to_process = [f for f in all_pdf_files if not any(p in f for p in EXCLUDED_CONSTITUENCY_PATTERNS)]
+                        if excluded:
+                            logger.info(f"⛔ Excluding {len(excluded)} PDFs matching excluded constituencies: {EXCLUDED_CONSTITUENCY_PATTERNS}")
+
                         # Limit for testing
-                        pdf_files_to_process = all_pdf_files
                         is_partial_processing = False
                         if limit_pdfs:
                             pdf_files_to_process = all_pdf_files[:limit_pdfs]
